@@ -5,8 +5,8 @@ Workspace for the Kaggle Solar Filament Segmentation Challenge 2026.
 ## Project structure
 
 ```text
-Resources/       Competition references, documentation, and notes
-Analysis/        Exploratory notebooks and validation analysis
+resources/       Competition references, documentation, and notes
+analysis/        Exploratory notebooks and validation analysis
 pre-processing/  Image preparation and annotation-to-mask conversion
 training/        Training configurations, scripts, and experiment records
 inference/       Prediction scripts and submission generation
@@ -14,8 +14,8 @@ inference/       Prediction scripts and submission generation
 
 ## Workflow
 
-1. Review the competition references in `Resources/`.
-2. Explore images and annotations in `Analysis/`.
+1. Review the competition references in `resources/`.
+2. Explore images and annotations in `analysis/`.
 3. Implement data preparation in `pre-processing/`.
 4. Train and evaluate models in `training/`.
 5. Generate masks and the submission CSV in `inference/`.
