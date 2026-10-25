@@ -1,7 +1,7 @@
-# Data Splitting & Partitioning Strategy
+# Model Training and Data Partitioning Strategy
 
 ## Executive Summary
-To evaluate our U-Net model accurately on the MAGFiLO solar filament dataset, data partitioning must be structured to prevent **data leakage**. Splitting images randomly without accounting for repeated annotations, temporal proximity, or duplicate observations can inflate validation metrics. The split should measure performance on observations sufficiently independent of the training data.
+To train and evaluate an instance-segmentation model accurately on the MAGFiLO solar filament dataset, data partitioning must be structured to prevent **data leakage**. Splitting images randomly without accounting for repeated annotations, temporal proximity, or duplicate observations can inflate validation metrics. The split should measure performance on observations sufficiently independent of the training data.
 
 ---
 
@@ -49,7 +49,7 @@ For the current task of predicting individual filament masks, the following are 
 | Vertical flip | Reverses top/bottom and north/south orientation | Flip the image and each individual mask identically |
 | 180-degree rotation | Equivalent to both flips together | Rotate the image and each individual mask identically |
 
-These operations preserve pixel values and avoid interpolation when implemented as array flips or a quarter-turn rotation by 180 degrees. They create additional views of existing observations, not new independent solar observations. Preserve individual mask identities rather than replacing instance targets with a union mask. If boxes, polygons, spines or coordinate features are used, transform those consistently too.
+These operations preserve pixel values and avoid interpolation when implemented as array flips or a 180-degree rotation implemented as two quarter turns. They create additional views of existing observations, not new independent solar observations. Preserve individual mask identities rather than replacing instance targets with a union mask. If boxes, polygons, spines or coordinate features are used, transform those consistently too.
 
 ### Brightness inversion is a different operation
 An intensity inversion such as `255 - image` makes dark filaments bright. It does not change spatial orientation and does not match the usual appearance of the supplied H-alpha observations. Leave it out of the initial augmentation experiment unless a separate validation comparison supports its use.
@@ -64,6 +64,107 @@ Flips also change hemisphere and directional relationships. This is acceptable a
 2. Apply random paired image/mask transformations only to training examples, preferably during loading. Any saved augmented variants inherit their source image's fold.
 3. Compare a baseline against a flip-augmented run using the same split and evaluation procedure. Check small filaments, merged objects and fragmentation with the organizer's instance-level evaluator.
 4. Keep validation images unaugmented for this comparison. Any future test-time augmentation requires inverse-transforming predictions before combining them and evaluating that procedure separately.
+
+---
+
+## Training Algorithm
+
+The proposed baseline is Mask R-CNN with a pretrained ResNet-50 feature-pyramid backbone. The settings below are provisional starting points to validate, not conclusions established by the EDA.
+
+1. **Prepare the dataset**
+   - Index images, timestamps, stations, and annotations.
+   - Link annotations through `image_id`, then group records by source filename.
+   - Verify image dimensions, mask alignment, and duplicate files.
+   - Preserve separate filament masks and use one foreground class: filament.
+
+2. **Create five validation folds**
+   - Keep repeated images and all their annotator records in the same fold.
+   - Group observations by date across stations.
+   - Inspect nearby observations across fold boundaries.
+     - Merge related temporal groups or introduce exclusion gaps where needed.
+   - Balance stations without breaking groups.
+   - Save and freeze the fold assignments.
+
+3. **Handle multiple annotators**
+   - Sample unique photographs uniformly during training.
+   - Randomly select one complete annotation set for each sampled photograph.
+   - Keep alternative annotations separate.
+   - Evaluate predictions using the organizer's treatment of multiple annotation sets.
+
+4. **Preprocess images**
+   - Read images as grayscale and scale intensities to `[0,1]`.
+   - Repeat the grayscale channel for a pretrained three-channel backbone.
+   - Apply the backbone's expected normalization once.
+   - Start with full images resized to `1024 × 1024`.
+     - Preserve coordinate mappings to the original `2048 × 2048` resolution.
+     - Check whether small masks disappear during resizing.
+   - Initially omit brightness inversion, CLAHE, and fixed-radius disk masking.
+
+5. **Augment training examples**
+   - Apply horizontal and vertical flips independently with probability `0.5`.
+   - Transform images and all corresponding instance masks identically.
+   - Test mild brightness and contrast changes separately.
+   - Keep validation images unchanged.
+   - Initially avoid aggressive cropping, erasing, and distortion.
+
+6. **Initialize the model**
+   - Use Mask R-CNN with a pretrained ResNet-50 feature-pyramid backbone.
+   - Configure prediction heads for background and filament.
+   - Derive training boxes from individual segmentation masks.
+   - Inspect small-object detection and elongated-mask quality before changing proposal or mask-head settings.
+
+7. **Train an initial baseline**
+   - Start with one validation fold.
+   - Use these provisional settings:
+     - Optimizer: AdamW.
+     - Backbone learning rate: `1e-5`.
+     - Prediction-head learning rate: `1e-4`.
+     - Weight decay: `1e-4`.
+     - Effective batch size: `4`, using gradient accumulation if necessary.
+     - Schedule: short warm-up followed by cosine decay.
+     - Maximum duration: `50` epochs.
+     - Early stopping: `10` epochs without improved validation PQ.
+   - Use standard classification, proposal, box-regression, and instance-mask losses.
+   - Save checkpoints and experiment settings.
+
+8. **Validate after each epoch**
+   - Predict complete validation images.
+   - Restore masks to original image coordinates.
+   - Calculate Panoptic Quality using the organizer's evaluator.
+   - Inspect:
+     - Missed filaments and false detections.
+     - Fragmentation and over-merging.
+     - Thin branches and boundary quality.
+   - Report results by station, object size, and elongation.
+   - Select checkpoints by validation PQ and record inference time.
+
+9. **Tune post-processing**
+   - Tune detection-confidence and mask-probability thresholds.
+   - Check whether suppression removes neighboring elongated objects.
+   - Avoid automatic small-component removal or disconnected-mask splitting unless validation supports it.
+
+10. **Compare controlled experiments**
+    - Change one setting at a time:
+      - Flips versus no flips.
+      - Simple scaling versus alternative contrast normalization.
+      - `1024 × 1024` versus higher-resolution inputs.
+      - Standard mask loss versus an additional Dice loss.
+    - Retain changes that improve validation performance consistently.
+
+11. **Complete cross-validation**
+    - Train the selected configuration across all five folds.
+    - Report mean PQ, fold variation, and inference time.
+    - Separate threshold tuning from final performance assessment where practical.
+
+12. **Train and export the final model**
+    - Choose settings and training duration from cross-validation.
+    - Retrain on all eligible training images.
+    - Save model weights, preprocessing settings, dependency versions, and reproduction instructions.
+    - Generate test predictions.
+      - Restore masks to `2048 × 2048`.
+      - Encode individual masks as RLE.
+      - Assign unique filament IDs.
+      - Verify encoding round trips and submission format.
 
 ---
 
@@ -84,3 +185,5 @@ Flips also change hemisphere and directional relationships. This is acceptable a
 - [Competition data and annotation format](https://www.kaggle.com/competitions/filament-segmentation-2026/data)
 - [Competition task and evaluation](https://www.kaggle.com/competitions/filament-segmentation-2026)
 - [MAGFiLO dataset paper, including chirality annotations](https://www.nature.com/articles/s41597-024-03876-y)
+
+- [Torchvision Mask R-CNN model documentation](https://docs.pytorch.org/vision/main/models/generated/torchvision.models.detection.maskrcnn_resnet50_fpn.html)
